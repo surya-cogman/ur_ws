@@ -98,9 +98,9 @@ class MotionPlanner(Node):
 
                 p += v * self.dt
 
-            self.current_positions[i] = p
-            self.current_velocity[i] = v
-            new_pos.append(float(p))
+                self.current_positions[i] = p
+                self.current_velocity[i] = v
+                new_pos.append(float(p))
 
         if np.allclose(self.current_positions, self.target_list, atol=0.01):
             self.get_logger().info("Target reached.")

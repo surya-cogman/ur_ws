@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'trapezoidal_controller=joint_space.trapezoidal_controller:main',
+            'trapezoidal_motion_planner=joint_space.trapezoidal_motion_planner:main',
             'motion_planner=joint_space.motion_planner:main',
         ],
     },

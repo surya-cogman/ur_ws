@@ -1,134 +1,140 @@
-#!/usr/bin/env python3
 import rclpy
-from rclpy.node import Node
 import numpy as np
+from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 from sensor_msgs.msg import JointState
 
 
-class TrapezoidalController(Node):
+class TrapezoidalGenerator(Node):
+
     def __init__(self):
-        super().__init__('trapezoidal_controller')
+        super().__init__('trapezoidal_generator')
 
-        # ---- USER PARAMETERS ----
-        self.dt = 0.01                 # 100 Hz
-        self.max_vel = 1.0             # rad/s
-        self.max_acc = 3.0             # rad/s^2
-        self.target_pos = np.array(
-            [0.0, -1.57, -1.57, 0.0, 0.0, 0.0]
-        )
-
-        self.joint_names = [
-            "shoulder_pan_joint",
-            "shoulder_lift_joint",
-            "elbow_joint",
-            "wrist_1_joint",
-            "wrist_2_joint",
-            "wrist_3_joint"
-        ]
-
-        self.joint_count = len(self.target_pos)
-
-        # Internal state (initialized later)
-        self.current_pos = None
-        self.current_vel = np.zeros(self.joint_count)
-
-        self.initialized = False
-
-        # Publisher
-        self.publisher = self.create_publisher(
+        # Publisher: position commands
+        self.joint_publisher_ = self.create_publisher(
             Float64MultiArray,
-            '/position_controller/commands',
+            '/forward_command_controller/commands',
             10
         )
 
-        # Subscriber (read once)
-        self.subscription = self.create_subscription(
+        # Subscriber: joint states
+        self.joint_subscriber_ = self.create_subscription(
             JointState,
             '/joint_states',
-            self.joint_state_callback,
+            self.cb_joint_sub,
             10
         )
 
-        # Timer
-        self.timer = self.create_timer(self.dt, self.update)
+        self.joint_index = {}
+        self.joint_index_initialize = False
+        self.initial_received = False
 
-        self.get_logger().info("Waiting for initial joint state...")
+        # initializing parameters
+        self.dt = 0.01
+        self.t = 0.0
+        self.initial_angles = None
+        self.desired_angles = np.array([90.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        self.final_angles = np.deg2rad(self.desired_angles)
+        self.Vmax = 5.0
+        self.Amax = 2.5
 
-    def joint_state_callback(self, msg):
+        self.timer_ = self.create_timer(self.dt, self.cb_joint_pub)
 
-        if self.initialized:
+    def cb_joint_sub(self, msg):
+        """
+        _summary_
+
+        :param msg: _description_
+        :type msg: _type_
+        """
+        if not self.joint_index_initialize:
+            for i, name in enumerate(msg.name):
+                self.joint_index[name] = i
+            self.joint_index_initialize = True
+
+        if not self.initial_received:
+            self.initial_angles = np.array(
+                [msg.position[self.joint_index[name]] for name in msg.name])
+            self.setup_trajectory()
+            self.initial_received = True
+
+    def setup_trajectory(self):
+        """
+        _summary_
+        """
+
+        self.distances = self.final_angles - self.initial_angles
+        self.max_distance = np.max(np.abs(self.distances))
+
+        self.ratios = self.distances/self.max_distance
+
+        self.t_acc = self.Vmax/self.Amax
+        d_acc_dec = self.Vmax * self.t_acc
+
+        if self.max_distance < d_acc_dec:
+            self.t_acc = np.sqrt(self.max_distance / self.Amax)
+            self.t_cruise = 0.0
+            self.Vmax = self.Amax * self.t_acc
+        else:
+            self.t_cruise = (self.max_distance - d_acc_dec) / self.Vmax
+
+        self.total_time = 2 * self.t_acc + self.t_cruise
+
+    def compute_trajectory_step(self):
+        """
+        _summary_
+
+        :return: _description_
+        :rtype: _type_
+        """
+
+        if self.t > self.total_time:
+            return None
+
+        # Accel
+        if self.t < self.t_acc:
+            S = 0.5 * self.Amax * self.t**2
+
+        # Cruise
+        elif self.t < (self.t_acc + self.t_cruise):
+            S = (0.5 * self.Amax * self.t_acc**2 +
+                 self.Vmax * (self.t - self.t_acc))
+
+        # Decel
+        else:
+            t_dec = (self.t - (self.t_acc + self.t_cruise))
+            S = (0.5 * self.Amax * self.t_acc**2 +
+                 self.Vmax * self.t_cruise +
+                 self.Vmax * t_dec -
+                 0.5 * self.Amax * t_dec**2)
+
+        q_cmd = self.initial_angles + S * self.ratios
+        self.t += self.dt
+        return q_cmd
+
+    def cb_joint_pub(self):
+
+        if not self.initial_received:
             return
 
-        try:
-            positions = []
-            for name in self.joint_names:
-                idx = msg.name.index(name)
-                positions.append(msg.position[idx])
+        q_cmd = self.compute_trajectory_step()
 
-            self.current_pos = np.array(positions)
-            self.initialized = True
-
-            self.get_logger().info("Initial joint positions received.")
-            self.get_logger().info(f"Start pose: {self.current_pos}")
-
-            # Stop listening after first read
-            self.destroy_subscription(self.subscription)
-
-        except ValueError:
-            # Joint names not found yet
-            pass
-
-    def update(self):
-
-        if not self.initialized:
+        if q_cmd is None:
+            self.get_logger().info("Trajectory Completed")
+            self.timer_.cancel()
             return
-
-        new_pos = []
-
-        for i in range(self.joint_count):
-            p = self.current_pos[i]
-            v = self.current_vel[i]
-            pf = self.target_pos[i]
-
-            dist = pf - p
-
-            if abs(dist) < 1e-4 and abs(v) < 1e-3:
-                p = pf
-                v = 0.0
-            else:
-                decel_dist = (v * v) / (2 * self.max_acc)
-
-                if abs(dist) > decel_dist:
-                    # accelerate
-                    v += np.sign(dist) * self.max_acc * self.dt
-                    v = np.clip(v, -self.max_vel, self.max_vel)
-                else:
-                    # decelerate toward zero velocity
-                    v -= np.sign(v) * self.max_acc * self.dt
-
-                p += v * self.dt
-
-            self.current_pos[i] = p
-            self.current_vel[i] = v
-            new_pos.append(float(p))
-
-            if np.allclose(self.current_pos, self.target_pos, atol=0.01):
-                self.get_logger().info("Target reached.")
-                self.timer.cancel()
 
         msg = Float64MultiArray()
-        msg.data = new_pos
-        self.publisher.publish(msg)
+        msg.data = q_cmd.tolist()
+        self.joint_publisher_.publish(msg=msg)
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = TrapezoidalController()
+    node = TrapezoidalGenerator()
     rclpy.spin(node)
-    node.destroy_node()
     rclpy.shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
