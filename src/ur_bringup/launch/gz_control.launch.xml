@@ -2,7 +2,7 @@
 
     <!-- ##################################################-->
     <!-- arguments-->
-    <arg name="ur_type" default="ur10"/>
+    <arg name="ur_type" default="ur5e"/>
     <arg name="robot_name" default="ur"/>
     <arg name="use_sim_time" default="true"/>
 

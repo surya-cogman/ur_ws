@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'closed_loop_ik = task_space.closed_loop_ik:main',
         ],
     },
 )
