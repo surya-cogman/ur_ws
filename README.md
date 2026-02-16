@@ -138,5 +138,5 @@ Errors are computed using:
 
 ## 👨‍💻 Author
 
-Your Name  
+Nelli.Anantha surya vamshi 
 Robotics | Manipulator Control | Task-Space Control
